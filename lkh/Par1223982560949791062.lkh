@@ -1,0 +1,4 @@
+PROBLEM_FILE = /Users/benjbach/eclipse-workspace/cubix/lkh/dist2048177319033260340.tsp
+TRACE_LEVEL = 0
+RUNS = 2
+INITIAL_TOUR_FILE = /Users/benjbach/eclipse-workspace/cubix/lkh/initialTour1545760624384945815.tour

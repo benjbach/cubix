@@ -1,0 +1,288 @@
+#include "LKH.h"
+
+/* The SolveSubproblem solves a given subproblem. The subproblem is 
+ * identified by the parameter CurrentSuproblem and contains all 
+ * nodes with Subproblem equal to CurrentSubproblem.   
+ *  
+ * The parameter Subproblems specifies the number of subproblems.
+ * The parameter GlobalBestCost references the current best cost of the 
+ * whole problem.
+ */
+
+void
+SolveSubproblem(int CurrentSubproblem, int Subproblems,
+                GainType * GlobalBestCost)
+{
+    Node *FirstNodeSaved = FirstNode, *N, *Next, *Last = 0;
+    GainType OptimumSaved = Optimum, Cost, Improvement, GlobalCost;
+    GainType BestCost = PLUS_INFINITY;
+    double LastTime, Time, ExcessSaved = Excess;
+    int NewDimension = 0, Number, i, InitialTourEdges = 0,
+        AscentCandidatesSaved = AscentCandidates,
+        InitialPeriodSaved = InitialPeriod, MaxTrialsSaved = MaxTrials;
+
+    FirstNode = 0;
+    N = FirstNodeSaved;
+    do {
+        if (N->Subproblem == CurrentSubproblem) {
+            if (SubproblemsCompressed &&
+                (((N->SubproblemPred == N->SubBestPred ||
+                   N->SubproblemPred->Subproblem != CurrentSubproblem ||
+                   FixedOrCommon(N, N->SubproblemPred)) &&
+                  (N->SubproblemSuc == N->SubBestSuc ||
+                   N->SubproblemSuc->Subproblem != CurrentSubproblem ||
+                   FixedOrCommon(N, N->SubproblemSuc))) ||
+                 ((N->SubproblemPred == N->SubBestSuc ||
+                   N->SubproblemPred->Subproblem != CurrentSubproblem ||
+                   FixedOrCommon(N, N->SubproblemPred)) &&
+                  (N->SubproblemSuc == N->SubBestPred ||
+                   N->SubproblemSuc->Subproblem != CurrentSubproblem ||
+                   FixedOrCommon(N, N->SubproblemSuc)))))
+                N->Subproblem = -CurrentSubproblem;
+            else {
+                if (!FirstNode)
+                    FirstNode = N;
+                NewDimension++;
+            }
+            N->Head = N->Tail = 0;
+        }
+        N->SubBestPred = N->SubBestSuc = 0;
+        N->FixedTo1Saved = N->FixedTo1;
+        N->FixedTo2Saved = N->FixedTo2;
+    } while ((N = N->SubproblemSuc) != FirstNodeSaved);
+    if ((Number = CurrentSubproblem % Subproblems) == 0)
+        Number = Subproblems;
+    if (NewDimension <= 3) {
+        if (TraceLevel >= 1)
+            printff
+                ("\nSubproblem %d of %d: Dimension = %d (too small)\n",
+                 Number, Subproblems, NewDimension);
+        FirstNode = FirstNodeSaved;
+        return;
+    }
+    if (AscentCandidates > NewDimension - 1)
+        AscentCandidates = NewDimension - 1;
+    if (InitialPeriod < 0) {
+        InitialPeriod = NewDimension / 2;
+        if (InitialPeriod < 100)
+            InitialPeriod = 100;
+    }
+    if (Excess < 0)
+        Excess = 1.0 / NewDimension;
+    if (MaxTrials == -1)
+        MaxTrials = NewDimension;
+    N = FirstNode;
+    do {
+        if (N->Subproblem == CurrentSubproblem) {
+            N->Pred = N->Suc = N;
+            if (N != FirstNode)
+                Follow(N, Last);
+            Last = N;
+        }
+        Next = N->SubproblemSuc;
+        if (N->Subproblem != CurrentSubproblem &&
+            Next->Subproblem == CurrentSubproblem && !Fixed(Last, Next)) {
+            if (!Last->FixedTo1
+                || Last->FixedTo1->Subproblem != CurrentSubproblem)
+                Last->FixedTo1 = Next;
+            else
+                Last->FixedTo2 = Next;
+            if (!Next->FixedTo1
+                || Next->FixedTo1->Subproblem != CurrentSubproblem)
+                Next->FixedTo1 = Last;
+            else
+                Next->FixedTo2 = Last;
+            if (C == C_EXPLICIT) {
+                if (Last->Id > Next->Id)
+                    Last->C[Next->Id] = 0;
+                else
+                    Next->C[Last->Id] = 0;
+            }
+        }
+    }
+    while ((N = Next) != FirstNode);
+
+    Dimension = NewDimension;
+    AllocateSegments();
+    InitializeStatistics();
+    if (CacheSig)
+        for (i = 0; i <= CacheMask; i++)
+            CacheSig[i] = 0;
+    OptimumSaved = Optimum;
+    Optimum = 0;
+    N = FirstNode;
+    do {
+        if (N->SubproblemSuc == N->InitialSuc ||
+            N->SubproblemPred == N->InitialSuc)
+            InitialTourEdges++;
+        if (!Fixed(N, N->Suc))
+            Optimum += Distance(N, N->Suc);
+        if (N->FixedTo1 && N->Subproblem != N->FixedTo1->Subproblem)
+            eprintf("Illegal fixed edge (%d,%d)", N->Id, N->FixedTo1->Id);
+        if (N->FixedTo2 && N->Subproblem != N->FixedTo2->Subproblem)
+            eprintf("Illegal fixed edge (%d,%d)", N->Id, N->FixedTo2->Id);
+    }
+    while ((N = N->Suc) != FirstNode);
+    if (TraceLevel >= 1)
+        printff
+            ("\nSubproblem %d of %d: Dimension = %d, Upper bound = "
+             GainFormat "\n", Number, Subproblems, Dimension, Optimum);
+    FreeCandidateSets();
+    CreateCandidateSet();
+
+    for (Run = 1; Run <= Runs; Run++) {
+        LastTime = GetTime();
+        Cost = Norm != 0 ? FindTour() : Optimum;
+        if (Cost < BestCost) {
+            N = FirstNode;
+            do {
+                N->SubBestPred = N->Pred;
+                N->SubBestSuc = N->Suc;
+            } while ((N = N->Suc) != FirstNode);
+            BestCost = Cost;
+        }
+        if (Cost < Optimum || (Cost != Optimum && OutputTourFileName)) {
+            Improvement = Optimum - Cost;
+            if (Improvement > 0) {
+                BestCost = GlobalCost = *GlobalBestCost -= Improvement;
+                Optimum = Cost;
+            } else
+                GlobalCost = *GlobalBestCost - Improvement;
+            N = FirstNode;
+            if (Norm == 0) {
+                do
+                    N = N->BestSuc = N->Suc;
+                while (N != FirstNode);
+            }
+            do
+                (N->Suc = N->BestSuc)->Pred = N;
+            while ((N = N->BestSuc) != FirstNode);
+            do
+                N->Mark = 0;
+            while ((N = N->SubproblemSuc) != FirstNode);
+            do {
+                N->Mark = N;
+                if (!N->SubproblemSuc->Mark &&
+                    (N->Subproblem != CurrentSubproblem ||
+                     N->SubproblemSuc->Subproblem != CurrentSubproblem))
+                    N->BestSuc = N->SubproblemSuc;
+                else if (!N->SubproblemPred->Mark &&
+                         (N->Subproblem != CurrentSubproblem ||
+                          N->SubproblemPred->Subproblem !=
+                          CurrentSubproblem))
+                    N->BestSuc = N->SubproblemPred;
+                else if (!N->Suc->Mark)
+                    N->BestSuc = N->Suc;
+                else if (!N->Pred->Mark)
+                    N->BestSuc = N->Pred;
+                else
+                    N->BestSuc = FirstNode;
+            }
+            while ((N = N->BestSuc) != FirstNode);
+            Dimension = DimensionSaved;
+            i = 0;
+            do {
+                if (ProblemType != ATSP)
+                    BetterTour[++i] = N->Id;
+                else if (N->Id <= Dimension / 2) {
+                    i++;
+                    if (N->Suc->Id != N->Id + Dimension / 2)
+                        BetterTour[i] = N->Id;
+                    else
+                        BetterTour[Dimension / 2 - i + 1] = N->Id;
+                }
+            }
+            while ((N = N->BestSuc) != FirstNode);
+            WriteTour(OutputTourFileName, BetterTour, BestCost);
+            if (Improvement > 0) {
+                do {
+                    N->BestSuc->SubproblemPred = N;
+                    N = N->SubproblemSuc = N->BestSuc;
+                }
+                while (N != FirstNode);
+                RecordBestTour();
+                WriteTour(TourFileName, BestTour, BestCost);
+                if (Run < Runs) {
+                    N = FirstNode;
+                    do {
+                        int d;
+                        Next = N->Suc;
+                        d = C(N, Next);
+                        AddCandidate(N, Next, d, -1);
+                        AddCandidate(Next, N, d, -1);
+                    }
+                    while ((N = Next) != FirstNode);
+                }
+            }
+            Dimension = NewDimension;
+            if (TraceLevel >= 1) {
+                printff("*** %d: Cost = " GainFormat, Number, GlobalCost);
+                if (OptimumSaved != MINUS_INFINITY && OptimumSaved != 0)
+                    printff(", Gap = %0.3f%%",
+                            100.0 * (GlobalCost -
+                                     OptimumSaved) / OptimumSaved);
+                printff(", Time = %0.1f sec. %s\n",
+                        fabs(GetTime() - LastTime),
+                        GlobalCost < OptimumSaved ? "<" : GlobalCost ==
+                        OptimumSaved ? "=" : "");
+            }
+        }
+
+        Time = fabs(GetTime() - LastTime);
+        UpdateStatistics(Cost, Time);
+        if (TraceLevel >= 1 && Cost != PLUS_INFINITY)
+            printff("Run %d: Cost = " GainFormat ", Time = %0.1f sec.\n\n",
+                    Run, Cost, Time);
+        SRandom(++Seed);
+        if (Norm == 0)
+            break;
+    }
+
+    if (TraceLevel >= 1)
+        PrintStatistics();
+
+    if (C == C_EXPLICIT) {
+        N = FirstNode;
+        do {
+            for (i = 1; i < N->Id; i++) {
+                N->C[i] -= N->Pi + (&NodeSet[i])->Pi;
+                N->C[i] /= Precision;
+            }
+            if (N->FixedTo1 && N->FixedTo1 != N->FixedTo1Saved) {
+                if (N->Id > N->FixedTo1->Id)
+                    N->C[N->FixedTo1->Id] = Distance(N, N->FixedTo1);
+                else
+                    N->FixedTo1->C[N->Id] = Distance(N, N->FixedTo1);
+            }
+            if (N->FixedTo2 && N->FixedTo2 != N->FixedTo2Saved) {
+                if (N->Id > N->FixedTo2->Id)
+                    N->C[N->FixedTo2->Id] = Distance(N, N->FixedTo2);
+                else
+                    N->FixedTo2->C[N->Id] = Distance(N, N->FixedTo2);
+            }
+        }
+        while ((N = N->Suc) != FirstNode);
+    }
+
+    FreeCandidateSets();
+    if (InitialTourEdges == Dimension) {
+        do
+            N->InitialSuc = N->SubproblemSuc;
+        while ((N = N->SubproblemSuc) != FirstNode);
+    }
+    Dimension = ProblemType != ATSP ? DimensionSaved : 2 * DimensionSaved;
+    N = FirstNode = FirstNodeSaved;
+    do {
+        N->Suc = N->BestSuc = N->SubproblemSuc;
+        N->Suc->Pred = N;
+        N->FixedTo1 = N->FixedTo1Saved;
+        N->FixedTo2 = N->FixedTo2Saved;
+        N->Subproblem = abs(N->Subproblem);
+    }
+    while ((N = N->Suc) != FirstNode);
+    Optimum = OptimumSaved;
+    Excess = ExcessSaved;
+    AscentCandidates = AscentCandidatesSaved;
+    InitialPeriod = InitialPeriodSaved;
+    MaxTrials = MaxTrialsSaved;
+}
